@@ -67,6 +67,11 @@ REQUIRE_RESISTANCE = False     # True=上方必须有阻力才算; False=创新�
 EXIT_ON_MA_CROSS = True        # 10/30均线反转(金叉<->死叉)时提醒离场
 EXIT_ON_STRUCTURE_BREAK = False # 上涨中跌破前低 / 下跌中突破前高 时提醒离场(默认关, 让利润奔跑; 想要提前预警改True)
 
+# —— 防重复刷屏 ——
+# 只在"信号K线刚收盘不久"时提醒; 超过这么多分钟就当旧信号、不再补发。
+# (GitHub 每15分钟跑一次, 35分钟能稳稳抓到刚收盘那根, 又不会反复刷同一根。)
+FRESH_ALERT_MIN = 35
+
 # —— 显示 ——
 PRICE_DECIMALS = 1             # 价格显示保留几位小数
 
@@ -124,7 +129,7 @@ def fetch_okx(timeframe, limit=300):
 
 def fetch_binance(timeframe, limit=300):
     interval = {"1D": "1d", "4H": "4h", "6H": "6h", "1H": "1h", "1W": "1w"}.get(timeframe, timeframe.lower())
-    url = (f"https://api.binance.com/api/v3/klines?symbol={BINANCE_SYMBOL}"
+    url = (f"https://data-api.binance.vision/api/v3/klines?symbol={BINANCE_SYMBOL}"
            f"&interval={interval}&limit={limit}")
     rows = _http_get_json(url)
     out = [{"t": int(r[0]), "o": float(r[1]), "h": float(r[2]),
@@ -138,7 +143,7 @@ def fetch_binance(timeframe, limit=300):
 def fetch_klines(timeframe, limit=300):
     need = max(EMA_PERIOD, MA_SLOW) + 5
     last_err = None
-    for name, fn in [("OKX", fetch_okx), ("币安", fetch_binance)]:
+    for name, fn in [("币安数据站", fetch_binance), ("OKX", fetch_okx)]:
         try:
             data = fn(timeframe, limit)
             if data and len(data) >= need:
@@ -359,6 +364,16 @@ def _tstr(t):
     return datetime.fromtimestamp(t / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
+_TF_MIN = {"1H": 60, "2H": 120, "4H": 240, "6H": 360, "12H": 720, "1D": 1440, "1W": 10080}
+
+
+def is_fresh(candle_open_ms):
+    """信号K线是否刚收盘不久(在 FRESH_ALERT_MIN 分钟内), 用来避免补发旧信号/重复刷屏。"""
+    close_ms = candle_open_ms + _TF_MIN.get(ENTRY_TF, 240) * 60 * 1000
+    age_min = (datetime.now(timezone.utc).timestamp() * 1000 - close_ms) / 60000.0
+    return age_min <= FRESH_ALERT_MIN
+
+
 def build_entry_message(tf, s):
     is_long = s["direction"] == "long"
     dir_cn = "做多" if is_long else "做空"
@@ -483,7 +498,9 @@ def main():
 
     # 开仓信号
     entry = evaluate_entry(kl, daily_dir)
-    if entry:
+    if entry and not is_fresh(entry["t"]):
+        print(f"  有开{entry['direction']}信号但该K线已收盘过久(非最新), 跳过, 不补发旧信号。")
+    elif entry:
         key = f"{INST}:{ENTRY_TF}:entry:{entry['direction']}"
         if state.get(key) == entry["t"]:
             print(f"  已对这根K线提醒过开{entry['direction']}, 不重复。")
@@ -497,6 +514,8 @@ def main():
 
     # 离场提醒
     for e in evaluate_exits(kl):
+        if not is_fresh(e["t"]):
+            continue
         key = f"{INST}:{ENTRY_TF}:{e['type']}"
         if state.get(key) == e["t"]:
             continue
