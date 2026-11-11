@@ -28,7 +28,7 @@ jobs:
         env:
           SCT_SENDKEY: ${{ secrets.SCT_SENDKEY }}
           # 想只发测试消息, 把下面一行最前面的 # 删掉:
-          TEST_MSG: "1"
+          # TEST_MSG: "1"
         run: python btc_monitor.py
 
       - name: 保存状态与心跳(失败也不影响)
