@@ -1,0 +1,50 @@
+name: BTC 盯盘提醒
+
+# 何时运行:
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # 每 15 分钟自动运行一次(UTC时间, 不用管时区)
+  workflow_dispatch:          # 也允许你在 GitHub 网页上手动点一下运行(用来测试)
+
+# 允许工作流把"去重状态"写回仓库
+permissions:
+  contents: write
+
+# 避免两次运行同时跑
+concurrency:
+  group: btc-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 运行盯盘脚本
+        env:
+          SCT_SENDKEY: ${{ secrets.SCT_SENDKEY }}   # 从仓库 Secrets 读取, 不会泄露
+          # 想让这次运行只发测试消息, 把下面一行前面的 # 去掉再手动运行:
+          # TEST_MSG: "1"
+        run: python btc_monitor.py
+
+      - name: 保存状态与心跳(保持 Actions 不被暂停)
+        run: |
+          # 每天写一次日期到 heartbeat.txt, 让仓库每天至少有一次活动,
+          # 这样即使很久没出信号, GitHub 也不会因"60天无活动"而暂停定时任务。
+          date -u +%Y-%m-%d > heartbeat.txt
+          if [ -n "$(git status --porcelain state.json heartbeat.txt)" ]; then
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add state.json heartbeat.txt
+            git commit -m "update state & heartbeat [skip ci]"
+            git push
+          else
+            echo "无变化, 无需提交。"
+          fi
